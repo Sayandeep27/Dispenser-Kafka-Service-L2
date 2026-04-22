@@ -100,12 +100,13 @@ public class DispenserService {
                 e.printStackTrace();
             }
             
-            String s=encryptionService.encryptPayload(jsonString,channelDataBean.getMsg_id());
-            log.info("sssssssssssssssss"+s);
+            String encryptedPayload=encryptionService.encryptPayload(jsonString,channelDataBean.getMsg_id());
+            log.info("encryptedPayload="+encryptedPayload);
             
             try
             {
-                smsGatewayApiCall(list.getUrl(),smsGatewayRequestBody);
+                String decryptedResponse=smsGatewayApiCall(list.getUrl(),encryptedPayload);
+                log.info("Decrypted SMS Gateway Response="+decryptedResponse);
                 log.info("After SMSGAteway Call");
                 
     
@@ -149,26 +150,21 @@ public class DispenserService {
        log.info("End of the SmsProcessing");
     }
    
-   public void smsGatewayApiCall(String url,SmsGatewayRequestBody smsGatewayRequestBody)
+   public String smsGatewayApiCall(String url,String encryptedPayload) throws Exception
    {
        log.info("Inside the smsGatewayApiCall");
     // Set Headers
        org.springframework.http.HttpHeaders headers = new HttpHeaders();
        headers.setContentType(MediaType.APPLICATION_JSON);
     // Wrap request in HttpEntity
-       HttpEntity<SmsGatewayRequestBody> entity = new HttpEntity<>(smsGatewayRequestBody, headers);
+       HttpEntity<String> entity = new HttpEntity<>(encryptedPayload, headers);
        log.info("Inside the smsGatewayApiCall111");
-       try {
-           // Send POST request and read response as a String or custom Class
-           ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
-           log.info("Inside the smsGatewayApiCall2222");
-           // Access the response body
-           String responseBody = response.getBody();
-           log.info("Response: " + responseBody);
-           
-       } catch (Exception e) {
-           log.error("API call failed or timed out: ",e);
-       }
+       // Send POST request and read response as encrypted String
+       ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
+       log.info("Inside the smsGatewayApiCall2222");
+       String responseBody = response.getBody();
+       log.info("Encrypted Response: " + responseBody);
+       return encryptionService.decryptPayload(responseBody);
    }
    
    public void KafkaSuccessInseret(ChannelDataBean channelDataBean)
