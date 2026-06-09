@@ -1,5 +1,5 @@
 package com.icici.smsgateway.server;
-
+// implemented as told by manesh sir
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -16,7 +16,6 @@ import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.sql.CallableStatement;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -27,8 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.apache.logging.log4j.Level;
@@ -551,7 +548,7 @@ public class SMSServerIdleHandler extends ChannelDuplexHandler {
     // -------------------------------------------------------------------------
     // NEW: Template resolution
     // Calls USP_GET_SMS_TEMPLATE_DETAILS to replace placeholders in the
-    // template text with actual values derived from the incoming MESSAGE.
+    // template text with values supplied in the incoming MESSAGE field.
     //
     // @param templateId     - ID of the template in TBL_SMS_TEMPLATE_DETAILS
     // @param templateValues - actual values separated by ~|~  (e.g. "235425~|~4")
@@ -578,14 +575,6 @@ public class SMSServerIdleHandler extends ChannelDuplexHandler {
                 String resolvedMessage = rs.getString("Message");
                 logger.info("resolveTemplate result=" + resolvedMessage);
 
-                if (resolvedMessage == null
-                        || resolvedMessage.equalsIgnoreCase("Template not found")
-                        || resolvedMessage.equalsIgnoreCase("Template mismatched")) {
-                    logger.error("Template resolution failed: " + resolvedMessage
-                            + " for TEMPLATE_ID=" + templateId);
-                    return null;
-                }
-
                 return resolvedMessage;
             }
 
@@ -601,81 +590,6 @@ public class SMSServerIdleHandler extends ChannelDuplexHandler {
         }
 
         return null;
-    }
-
-    private String getTemplateText(String templateId, Connection con) throws Exception {
-
-        PreparedStatement tmplSt = null;
-        ResultSet rs = null;
-
-        try {
-            tmplSt = con.prepareStatement("SELECT TEMPLATE_TEXT FROM TBL_SMS_TEMPLATE_DETAILS WHERE TEMPLATE_ID = ?");
-            tmplSt.setInt(1, Integer.parseInt(templateId));
-            rs = tmplSt.executeQuery();
-
-            if (rs.next()) {
-                String templateText = rs.getString("TEMPLATE_TEXT");
-                logger.info("Fetched TEMPLATE_TEXT for TEMPLATE_ID=" + templateId + " value=" + templateText);
-                return templateText;
-            }
-
-        } finally {
-            try {
-                if (rs != null)
-                    rs.close();
-                if (tmplSt != null)
-                    tmplSt.close();
-            } catch (Exception e) {
-                logger.error("Error closing template text statement", e);
-            }
-        }
-
-        return null;
-    }
-
-    private String extractTemplateValues(String templateText, String message) {
-
-        if (templateText == null || message == null) {
-            return null;
-        }
-
-        Pattern placeholderPattern = Pattern.compile("\\{#.*?#\\}");
-        Matcher placeholderMatcher = placeholderPattern.matcher(templateText);
-
-        StringBuilder regexBuilder = new StringBuilder("^");
-        int lastIndex = 0;
-        int placeholderCount = 0;
-
-        while (placeholderMatcher.find()) {
-            regexBuilder.append(Pattern.quote(templateText.substring(lastIndex, placeholderMatcher.start())));
-            regexBuilder.append("(.*?)");
-            lastIndex = placeholderMatcher.end();
-            placeholderCount++;
-        }
-
-        regexBuilder.append(Pattern.quote(templateText.substring(lastIndex)));
-        regexBuilder.append("$");
-
-        Matcher messageMatcher = Pattern.compile(regexBuilder.toString()).matcher(message);
-        if (!messageMatcher.matches()) {
-            logger.info("Template mismatch. TEMPLATE_TEXT=" + templateText + " MESSAGE=" + message);
-            return null;
-        }
-
-        if (placeholderCount == 0) {
-            return "";
-        }
-
-        StringBuilder templateValues = new StringBuilder();
-        for (int i = 1; i <= placeholderCount; i++) {
-            if (i > 1) {
-                templateValues.append("~|~");
-            }
-            templateValues.append(messageMatcher.group(i));
-        }
-
-        logger.info("Derived TEMPLATE_VALUES from MESSAGE=" + templateValues.toString());
-        return templateValues.toString();
     }
 
     // -------------------------------------------------------------------------
@@ -722,9 +636,8 @@ public class SMSServerIdleHandler extends ChannelDuplexHandler {
 
             // -----------------------------------------------------------------
             // NEW: Read template identifier from the incoming XML.
-            // If TEMPLATE_ID is provided, template values will be derived
-            // from the incoming MESSAGE and then validated/resolved through
-            // USP_GET_SMS_TEMPLATE_DETAILS.
+            // If TEMPLATE_ID is provided, MESSAGE contains the template values
+            // separated by ~|~ and is resolved through USP_GET_SMS_TEMPLATE_DETAILS.
             // -----------------------------------------------------------------
             String TEMPLATE_ID     = checkGetValue(doc.getElementsByTagName("TEMPLATE_ID").item(0));
 
@@ -759,33 +672,27 @@ public class SMSServerIdleHandler extends ChannelDuplexHandler {
 
                 // -----------------------------------------------------------------
                 // NEW: Template resolution block.
-                // If TEMPLATE_ID is present, derive placeholder values from the
-                // current MESSAGE and validate them through the stored procedure.
+                // If TEMPLATE_ID is present, treat MESSAGE as the template values.
                 // -----------------------------------------------------------------
                 if (!TEMPLATE_ID.equals("")) {
 
-                    logger.info("TEMPLATE_ID provided=" + TEMPLATE_ID + ", deriving template values from MESSAGE...");
+                    logger.info("TEMPLATE_ID provided=" + TEMPLATE_ID + ", resolving values from MESSAGE...");
 
                     con = this.dbpool.getConnection();
 
-                    String templateText = getTemplateText(TEMPLATE_ID, con);
-                    if (templateText == null || templateText.trim().equals("")) {
-                        logger.info("ERROR=Template not found for TEMPLATE_ID=" + TEMPLATE_ID + " source_IP=" + sourceIP);
-                        return strError + "ERROR=Template not found" + SeperatorString;
-                    }
+                    String resolvedMessage = resolveTemplate(TEMPLATE_ID, MESSAGE, con);
 
-                    String TEMPLATE_VALUES = extractTemplateValues(templateText, MESSAGE);
-                    if (TEMPLATE_VALUES == null) {
-                        logger.info("ERROR=Template mismatched for TEMPLATE_ID=" + TEMPLATE_ID + " source_IP=" + sourceIP);
-                        return strError + "ERROR=Template mismatched" + SeperatorString;
-                    }
-
-                    String resolvedMessage = resolveTemplate(TEMPLATE_ID, TEMPLATE_VALUES, con);
-
-                    if (resolvedMessage == null) {
+                    if (resolvedMessage == null || resolvedMessage.trim().equals("")) {
                         logger.info("ERROR=Template resolution failed for TEMPLATE_ID=" + TEMPLATE_ID
-                                + " source_IP=" + sourceIP + " derived TEMPLATE_VALUES=" + TEMPLATE_VALUES);
+                                + " source_IP=" + sourceIP);
                         return strError + "ERROR=Template resolution failed" + SeperatorString;
+                    }
+
+                    if (resolvedMessage.equalsIgnoreCase("Template not found")
+                            || resolvedMessage.equalsIgnoreCase("Template mismatched")) {
+                        logger.info("ERROR=" + resolvedMessage + " for TEMPLATE_ID=" + TEMPLATE_ID
+                                + " source_IP=" + sourceIP);
+                        return strError + "ERROR=" + resolvedMessage + SeperatorString;
                     }
 
                     // Override the MESSAGE with the fully resolved template text
